@@ -1,6 +1,9 @@
+# Keep the build context small and do not ship tests or CI config in the image.
 .git
 .github
 tests
 __pycache__
 *.pyc
 .venv
+.pytest_cache
+.ruff_cache

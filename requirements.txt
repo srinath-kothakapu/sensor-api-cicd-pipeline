@@ -1,2 +1,3 @@
+# Runtime dependencies only. These are what goes into the Docker image.
 fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1

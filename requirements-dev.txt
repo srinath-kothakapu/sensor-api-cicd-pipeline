@@ -1,4 +1,5 @@
+# Everything needed to lint and test locally and in CI.
 -r requirements.txt
 pytest>=8
-httpx>=0.27
+httpx>=0.27     # required by FastAPI's TestClient
 ruff>=0.5

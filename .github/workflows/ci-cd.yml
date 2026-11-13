@@ -1,3 +1,13 @@
+# CI/CD pipeline for the sensor API.
+#
+#   lint ──┐
+#          ├──> docker-smoke-test ──> publish (main branch and version tags only)
+#   test ──┘
+#
+# Every push and pull request runs lint, test and the container smoke test.
+# Only a push to main (or a v* tag) continues to the publish job, so a pull
+# request can never push an image to the registry.
+
 name: CI/CD
 
 on:
@@ -6,6 +16,8 @@ on:
     tags: ["v*"]
   pull_request:
 
+# Least privilege by default: jobs can read the repository and nothing else.
+# The publish job asks for extra permission itself.
 permissions:
   contents: read
 
@@ -13,6 +25,7 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  # Fast style and bug check. Fails early so we do not waste time on the rest.
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -25,6 +38,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
 
+  # Unit tests on the oldest and newest Python versions we say we support.
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -40,6 +54,10 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: pytest -v
 
+  # Unit tests prove the code works; this proves the *image* works. It builds
+  # the Dockerfile, starts the container and talks to it over HTTP, which
+  # catches problems tests cannot see (missing files, wrong start command,
+  # port not exposed, dependency missing from requirements.txt).
   docker-smoke-test:
     needs: [lint, test]
     runs-on: ubuntu-latest
@@ -50,14 +68,22 @@ jobs:
       - name: Run container and call the API
         run: |
           docker run -d --name api -p 8000:8000 sensor-api:ci
+
+          # The server needs a moment to start, so retry for up to 20 seconds.
           for i in $(seq 1 20); do
             curl -fsS http://localhost:8000/health && break
             sleep 1
           done
+
+          # Health endpoint answers.
           curl -fsS http://localhost:8000/health | grep '"status":"ok"'
+
+          # A valid reading is accepted.
           curl -fsS -X POST http://localhost:8000/readings \
             -H 'Content-Type: application/json' \
             -d '{"device_id":"ci","temperature_c":22.5,"humidity_pct":40}' | grep apparent_temperature_c
+
+          # An out-of-range reading is refused with 422.
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/readings \
             -H 'Content-Type: application/json' \
             -d '{"device_id":"ci","temperature_c":999,"humidity_pct":40}')
@@ -66,14 +92,15 @@ jobs:
         if: failure()
         run: docker logs api
 
+  # Continuous delivery: publish the tested image to GitHub Container Registry.
+  # Runs only after every check above passed, and only for pushes (not PRs).
   publish:
-    # Continuous delivery: only after every check passes, and only on main or a version tag.
     needs: [docker-smoke-test]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write   # needed to push to ghcr.io
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -82,6 +109,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Work out the image tags: sha-<commit> always, the version for v* tags,
+      # and "latest" only when building the default branch.
       - id: meta
         uses: docker/metadata-action@v5
         with:
